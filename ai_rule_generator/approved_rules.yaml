@@ -1,0 +1,8 @@
+- rule: Suspicious CryptoMiner Process
+  desc: Phát hiện tiến trình nghi ngờ đào tiền ảo trong container
+  condition: spawned_process and container and proc.name in (newminer, minerd, cpuminer)
+  output: Cảnh báo CryptoMiner (container=%container.id proc=%proc.name cmdline=%proc.cmdline)
+  priority: CRITICAL
+  tags:
+  - process
+  - mitre_execution

@@ -1,0 +1,22 @@
+filebeat.inputs:
+- type: container
+  paths:
+    - '/var/lib/docker/containers/*/*.log'
+  exclude_lines:
+    - '^\[ai_processor\]'
+    - '^\[CRITICAL\]'
+    - '^\[HIGH\]'
+    - '^\[MEDIUM\]'
+    - '^\[INFO\]'
+    - '^\[DEBUG'
+    - '^\[ES ERROR\]'
+    - '^\[PARSE ERROR\]'
+    - '^\[\+\] Đang chờ'
+
+output.kafka:
+  hosts: ["localhost:9092"]
+  topic: "docker-logs"
+  partition.round_robin:
+    reachable_only: false
+  required_acks: 1
+  compression: gzip

@@ -1,0 +1,18 @@
+metricbeat.modules:
+- module: docker
+  metricsets:
+    - cpu
+    - memory
+    - network
+    - diskio
+  hosts: ["unix:///var/run/docker.sock"]
+  period: 10s
+
+output.kafka:
+  hosts: ["localhost:9092"]
+  topic: "docker-metrics"
+  partition.round_robin:
+    reachable_only: false
+  required_acks: 1
+  compression: gzip
+  max_message_bytes: 1000000

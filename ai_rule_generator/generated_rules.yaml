@@ -1,0 +1,17 @@
+- rule: Suspicious CryptoMiner Process
+  desc: Phát hiện tiến trình nghi ngờ đào tiền ảo trong container
+  condition: spawned_process and container and proc.name in (newminer, minerd, cpuminer)
+  output: Cảnh báo CryptoMiner (container=%container.id proc=%proc.name cmdline=%proc.cmdline)
+  priority: CRITICAL
+  tags:
+  - process
+  - mitre_execution
+- rule: Unusual Network Connection
+  desc: Trì hoàn thành một truyền điệu tối đa mở mở mở mở lên mạng ra trong khi công
+    ty đang đọc bài toán
+  condition: container.hostname in (external_ip_range) and network not in (allowed_networks)
+  output: Cảnh báo Hạnh phẩm mật mạch (container=%container.id connection=%connection.type)
+  priority: CRITICAL
+  tags:
+  - network
+  - mitre_reconnaissance

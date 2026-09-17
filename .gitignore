@@ -1,0 +1,31 @@
+# Environment variables (chứa secret)
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Docker volumes
+data/
+logs/
+elasticsearch-data/
+kafka-data/
+grafana-storage/
+
+# Test & coverage
+.coverage
+htmlcov/
+.tox/
+
+# Temp files
+*.tmp
+*.bak

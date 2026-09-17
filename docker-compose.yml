@@ -1,0 +1,141 @@
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.2
+    container_name: siem-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ports:
+      - "9200:9200"
+    deploy:
+      resources:
+        limits:
+          memory: 1.5G
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: siem-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://localhost:9092'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@localhost:9093'
+      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+      KAFKA_CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    ports:
+      - "9092:9092"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: siem-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    ports:
+      - "3000:3000"
+    deploy:
+      resources:
+        limits:
+          memory: 300M
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+  metricbeat:
+    image: docker.elastic.co/beats/metricbeat:8.12.2
+    container_name: siem-metricbeat
+    user: root
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys/fs/cgroup:/hostfs/sys/fs/cgroup:ro
+      - /proc:/hostfs/proc:ro
+      - ./configs/metricbeat.yml:/usr/share/metricbeat/metricbeat.yml:ro
+    network_mode: host
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.12.2
+    container_name: siem-filebeat
+    user: root
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./configs/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+    network_mode: host
+
+  connector:
+    build: ./connector
+    container_name: siem-connector
+    ports:
+      - "2801:2801"
+    network_mode: host
+    depends_on:
+      - kafka
+
+  ai_processor:
+    build: ./ai_processor
+    container_name: siem-ai-processor
+    network_mode: host
+    environment:
+      KAFKA_BOOTSTRAP: "localhost:9092"
+      ES_HOST: "http://localhost:9200"
+    depends_on:
+      - kafka
+      - elasticsearch
+    mem_limit: 300m
+    restart: unless-stopped
+
+  incident_responder:
+    build: ./incident_responder
+    container_name: siem-incident-responder
+    network_mode: host
+    environment:
+      KAFKA_BOOTSTRAP: "localhost:9092"
+      ES_HOST: "http://localhost:9200"
+      RESPONSE_ACTION: "stop"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - kafka
+      - elasticsearch
+    mem_limit: 200m
+    restart: unless-stopped
+
+  connector_gateway:
+    build: ./connector_gateway
+    container_name: siem-connector-gateway
+    network_mode: host
+    env_file:
+      - .env
+    mem_limit: 150m
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: siem-ollama
+    network_mode: host
+    volumes:
+      - ollama_data:/root/.ollama
+    mem_limit: 4g
+    restart: unless-stopped
+
+volumes:
+  es_data:
+  kafka_data:
+  grafana_data:
+  volumes:
+  ollama_data:
