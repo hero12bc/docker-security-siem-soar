@@ -137,5 +137,4 @@ volumes:
   es_data:
   kafka_data:
   grafana_data:
-  volumes:
   ollama_data:

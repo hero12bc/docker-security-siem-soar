@@ -5,16 +5,14 @@ import time
 from elasticsearch import Elasticsearch
 from kafka import KafkaConsumer, KafkaProducer
 
+from scenarios import SCENARIOS, CPU_WEIGHT, CPU_THRESHOLD_PERCENT, SIGNAL_TTL_SECONDS
+
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
 SOURCE_TOPICS = ["docker-metrics", "docker-logs", "docker-syscalls"]
 INCIDENT_TOPIC = "threat-incidents"
 
 ES_HOST = os.getenv("ES_HOST", "http://localhost:9200")
 ES_INDEX = "security-incidents"
-
-# Tín hiệu sẽ tự "hết hạn" sau chừng này giây nếu không có tín hiệu mới cùng loại
-# -> tránh vừa dính 1 lần là báo lặp đi lặp lại mãi mãi.
-SIGNAL_TTL_SECONDS = 240
 
 state = {}
 
@@ -72,10 +70,8 @@ def extract_container_id(payload: dict) -> str:
 def get_state(container_id: str) -> dict:
     if container_id not in state:
         state[container_id] = {
-            "high_cpu": 0,          # lưu timestamp lần cuối tín hiệu này xảy ra (0 = chưa có)
-            "mining_log": 0,
-            "suspicious_syscall": 0,
-            "signals": {},          # tên_signal -> timestamp lần cuối, để log ra cho dễ đọc
+            "cpu_high_at": 0,   # timestamp lần cuối CPU vượt ngưỡng (0 = chưa có)
+            "signals": {},      # "LOG:<scenario>" / "SYSCALL:<scenario>" -> timestamp lần cuối
         }
     return state[container_id]
 
@@ -109,65 +105,71 @@ def handle_metric(container_id: str, payload: dict) -> None:
         return
 
     s = get_state(container_id)
-    if cpu > 80:
-        s["high_cpu"] = time.time()
-        s["signals"]["HIGH_CPU"] = s["high_cpu"]
+    if cpu > CPU_THRESHOLD_PERCENT:
+        s["cpu_high_at"] = time.time()
 
 
 def handle_log(container_id: str, payload: dict) -> None:
     msg = str(payload.get("message", "")).lower()
+    if not msg:
+        return
     s = get_state(container_id)
-    keywords = ["stratum+tcp", "xmrig", "pool.minexmr", "monero", "hashrate"]
-    matched = [k for k in keywords if k in msg]
-    if matched:
-        s["mining_log"] = time.time()
-        s["signals"]["MINING_LOG_DETECTED"] = s["mining_log"]
-        # DEBUG: khi container_id là "unknown", in payload gốc để biết vì sao
-        # extract_container_id không nhận diện được, và log gốc chứa từ khóa gì.
-        if container_id == "unknown":
-            print(f"[DEBUG-UNKNOWN-LOG] matched_keywords={matched} | raw_payload={payload}")
+    for name, cfg in SCENARIOS.items():
+        matched = [kw for kw in cfg["log_keywords"] if kw in msg]
+        if matched:
+            s["signals"][f"LOG:{name}"] = time.time()
+            if container_id == "unknown":
+                print(f"[DEBUG-UNKNOWN-LOG] scenario={name} matched_keywords={matched} | raw_payload={payload}")
 
 
 def handle_syscall(container_id: str, payload: dict) -> None:
     rule = str(payload.get("rule", "")).lower()
     output = str(payload.get("output", "")).lower()
     s = get_state(container_id)
-
-    if "xmrig" in output or "miner" in output or "suspicious process" in rule:
-        s["suspicious_syscall"] = time.time()
-        s["signals"]["SUSPICIOUS_SYSCALL_XMRIG"] = s["suspicious_syscall"]
-        if container_id == "unknown":
-            print(f"[DEBUG-UNKNOWN-SYSCALL] raw_payload={payload}")
+    for name, cfg in SCENARIOS.items():
+        hit_output = any(kw in output for kw in cfg["syscall_output_kw"])
+        hit_rule = any(kw in rule for kw in cfg["syscall_rule_kw"])
+        if hit_output or hit_rule:
+            s["signals"][f"SYSCALL:{name}"] = time.time()
+            if container_id == "unknown":
+                print(f"[DEBUG-UNKNOWN-SYSCALL] scenario={name} raw_payload={payload}")
 
 
 def evaluate(container_id: str):
+    """
+    Tính điểm risk score CHO TỪNG kịch bản đang active, rồi chọn ra kịch bản
+    có điểm cao nhất để báo cáo (một container có thể khớp nhiều kịch bản
+    cùng lúc, nhưng ta báo cáo kịch bản đáng ngờ nhất tại thời điểm đó).
+    """
     s = get_state(container_id)
-    score = 0
-    active_signals = []
+    cpu_active = is_active(s["cpu_high_at"])
 
-    now = time.time()
-    if s["high_cpu"] or s["mining_log"] or s["suspicious_syscall"]:
-        age_cpu = now - s["high_cpu"] if s["high_cpu"] else -1
-        age_log = now - s["mining_log"] if s["mining_log"] else -1
-        age_syscall = now - s["suspicious_syscall"] if s["suspicious_syscall"] else -1
-        print(
-            f"[DEBUG-AGE] container={container_id} "
-            f"age_cpu={age_cpu:.1f}s age_log={age_log:.1f}s age_syscall={age_syscall:.1f}s "
-            f"(TTL={SIGNAL_TTL_SECONDS}s)"
-        )
+    best = None  # (score, scenario_name, active_signal_labels)
 
-    if is_active(s["high_cpu"]):
-        score += 30
-        active_signals.append("HIGH_CPU")
-    if is_active(s["mining_log"]):
-        score += 40
-        active_signals.append("MINING_LOG_DETECTED")
-    if is_active(s["suspicious_syscall"]):
-        score += 30
-        active_signals.append("SUSPICIOUS_SYSCALL_XMRIG")
+    for name, cfg in SCENARIOS.items():
+        score = 0
+        active = []
 
-    if score == 0:
+        log_ts = s["signals"].get(f"LOG:{name}", 0)
+        syscall_ts = s["signals"].get(f"SYSCALL:{name}", 0)
+
+        if is_active(log_ts):
+            score += cfg["weight_log"]
+            active.append(f"LOG_{name.upper()}")
+        if is_active(syscall_ts):
+            score += cfg["weight_syscall"]
+            active.append(f"SYSCALL_{name.upper()}")
+        if cfg.get("uses_cpu_signal") and cpu_active:
+            score += CPU_WEIGHT
+            active.append("HIGH_CPU")
+
+        if score > 0 and (best is None or score > best[0]):
+            best = (score, name, active)
+
+    if best is None:
         return None
+
+    score, scenario, active_signals = best
 
     label = "INFO"
     if score >= 80:
@@ -182,8 +184,10 @@ def evaluate(container_id: str):
         "container_id": container_id,
         "risk_score": score,
         "label": label,
+        "scenario": scenario,
+        "scenario_label": SCENARIOS[scenario]["label"],
         "signals": active_signals,
-        "rule_name": "CryptoMiner_MultiSignal_Correlation",
+        "rule_name": f"{scenario}_MultiSignal_Correlation",
     }
 
 
@@ -203,8 +207,8 @@ while producer is None:
         time.sleep(3)
 
 
-# Chỉ in lại cùng 1 (container_id, label, signals) một lần trong SIGNAL_TTL_SECONDS
-# để tránh spam log khi có nhiều message dồn dập cho cùng 1 sự cố.
+# Chỉ in lại cùng 1 (container_id, scenario, label, signals) một lần trong
+# SIGNAL_TTL_SECONDS để tránh spam log khi có nhiều message dồn dập.
 _last_printed = {}
 
 
@@ -214,19 +218,25 @@ def persist_and_alert(incident: dict) -> None:
     except Exception as e:
         print(f"[ES ERROR] {e}")
 
-    key = (incident["container_id"], incident["label"], tuple(sorted(incident["signals"])))
+    key = (
+        incident["container_id"],
+        incident["scenario"],
+        incident["label"],
+        tuple(sorted(incident["signals"])),
+    )
     now = time.time()
     if key not in _last_printed or (now - _last_printed[key]) > SIGNAL_TTL_SECONDS:
         _last_printed[key] = now
         print(
             f"[{incident['label']}] container={incident['container_id']} "
-            f"score={incident['risk_score']} signals={incident['signals']}"
+            f"scenario={incident['scenario']} score={incident['risk_score']} "
+            f"signals={incident['signals']}"
         )
 
     if incident["label"] == "CRITICAL":
         producer.send(INCIDENT_TOPIC, incident)
         producer.flush()
-        print(f"  -> Đã đẩy sự cố CRITICAL sang topic '{INCIDENT_TOPIC}'")
+        print(f"  -> Đã đẩy sự cố CRITICAL ({incident['scenario']}) sang topic '{INCIDENT_TOPIC}'")
 
 
 def main() -> None:
@@ -249,6 +259,7 @@ def main() -> None:
             time.sleep(3)
 
     print(f"[ai_processor] Đang lắng nghe topics: {SOURCE_TOPICS} (bootstrap={KAFKA_BOOTSTRAP})")
+    print(f"[ai_processor] Các kịch bản đang bật: {list(SCENARIOS.keys())}")
 
     for msg in consumer:
         topic = msg.topic

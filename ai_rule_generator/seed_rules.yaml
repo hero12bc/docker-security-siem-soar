@@ -1,0 +1,39 @@
+# ai_rule_generator/seed_rules.yaml
+#
+# Mỗi key ở đây là 1 "scenario" (khớp với key trong ai_processor/scenarios.py).
+# generator.py sẽ dùng đúng seed rule của scenario đang xử lý để làm mẫu cho AI.
+#
+# MUỐN THÊM KỊCH BẢN MỚI: thêm 1 key mới bên dưới, KHÔNG cần xóa/sửa key cũ.
+# Tên key nên trùng với key trong ai_processor/scenarios.py để 2 bên đồng bộ.
+
+cryptominer: |
+  - rule: Suspicious CryptoMiner Process
+    desc: Phat hien tien trinh nghi ngo dao tien ao trong container
+    condition: spawned_process and container and proc.name in (xmrig, minerd, cpuminer)
+    output: "CryptoMiner alert (container=%container.id proc=%proc.name cmdline=%proc.cmdline)"
+    priority: CRITICAL
+    tags: [process, mitre_execution]
+
+reverse_shell: |
+  - rule: Reverse Shell Spawned
+    desc: Phat hien tien trinh reverse shell duoc spawn trong container
+    condition: spawned_process and container and proc.name in (nc, ncat, bash, sh) and (proc.cmdline contains "-e" or proc.cmdline contains "/dev/tcp/")
+    output: "Reverse shell alert (container=%container.id proc=%proc.name cmdline=%proc.cmdline)"
+    priority: CRITICAL
+    tags: [process, network, mitre_execution]
+
+ssh_bruteforce: |
+  - rule: SSH Brute Force Attempt
+    desc: Phat hien nhieu lan dang nhap SSH that bai lien tiep trong container
+    condition: evt.type=execve and container and proc.name=sshd and evt.dir=< and evt.arg.res!=0
+    output: "SSH brute force alert (container=%container.id user=%user.name)"
+    priority: WARNING
+    tags: [network, mitre_credential_access]
+
+data_exfiltration: |
+  - rule: Sensitive File Read Then Outbound Connection
+    desc: Phat hien doc file nhay cam roi ket noi mang ra ngoai trong container
+    condition: open_read and container and fd.name in (/etc/shadow, /etc/passwd)
+    output: "Data exfiltration alert (container=%container.id file=%fd.name proc=%proc.name)"
+    priority: CRITICAL
+    tags: [filesystem, mitre_exfiltration]

@@ -21,6 +21,9 @@ elasticsearch-data/
 kafka-data/
 grafana-storage/
 
+# AI rule generator runtime state
+ai_rule_generator/processed_signals.json
+
 # Test & coverage
 .coverage
 htmlcov/

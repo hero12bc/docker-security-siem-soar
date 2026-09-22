@@ -33,7 +33,8 @@ def load_rules(path: str):
 
 
 def print_rule(rule: dict, index: int) -> None:
-    print(f"\n----- Luật #{index} -----")
+    scenario = rule.get("_source_scenario", "(không rõ scenario)")
+    print(f"\n----- Luật #{index} [scenario: {scenario}] -----")
     print(f"Tên       : {rule.get('rule')}")
     print(f"Mô tả     : {rule.get('desc')}")
     print(f"Điều kiện : {rule.get('condition')}")
@@ -52,7 +53,8 @@ def main():
         print_rule(rule, i)
         answer = input("Áp dụng luật này? (y/n): ").strip().lower()
         if answer == "y":
-            approved.append(rule)
+            clean_rule = {k: v for k, v in rule.items() if k != "_source_scenario"}
+            approved.append(clean_rule)
             print("  -> Đã chấp nhận.")
         else:
             print("  -> Bỏ qua.")
