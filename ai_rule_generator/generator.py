@@ -197,8 +197,8 @@ must have all these fields: rule, desc, condition, output, priority) that would
 also catch similar variations of this same attack technique (e.g. different
 process names, different ports/destinations, different command-line patterns).
 
-Write the "desc" field in Vietnamese. Everything else (rule, condition, output,
-priority, tags) must follow standard Falco YAML syntax.
+Write the "desc" field as one short plain English sentence. Everything else (rule,
+condition, output, priority, tags) must follow standard Falco YAML syntax.
 
 Return ONLY raw YAML as a list (do NOT wrap it in a "rules:" key), starting
 directly with "- rule:". Do NOT include any explanation before or after. If you

@@ -85,6 +85,7 @@ services:
     network_mode: host
     depends_on:
       - kafka
+    restart: unless-stopped
 
   ai_processor:
     build: ./ai_processor
@@ -122,6 +123,26 @@ services:
     env_file:
       - .env
     mem_limit: 150m
+    restart: unless-stopped
+
+  rule_proposer:
+    build: ./ai_rule_generator
+    container_name: siem-rule-proposer
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      KAFKA_BOOTSTRAP: "localhost:9092"
+      ES_HOST: "http://localhost:9200"
+      OLLAMA_URL: "http://localhost:11434/api/generate"
+      RULES_OUT_DIR: "/rules_out"
+    volumes:
+      - ./falco_rules_approved:/rules_out
+    depends_on:
+      - kafka
+      - elasticsearch
+      - ollama
+    mem_limit: 200m
     restart: unless-stopped
 
   ollama:

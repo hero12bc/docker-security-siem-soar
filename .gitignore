@@ -32,3 +32,8 @@ htmlcov/
 # Temp files
 *.tmp
 *.bak
+
+# Luật AI đã duyệt (dữ liệu runtime, không commit)
+falco_rules_approved/*
+!falco_rules_approved/.gitkeep
+*.patch

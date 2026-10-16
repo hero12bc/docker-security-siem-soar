@@ -5,7 +5,11 @@ import time
 from elasticsearch import Elasticsearch
 from kafka import KafkaConsumer, KafkaProducer
 
-from scenarios import SCENARIOS, CPU_WEIGHT, CPU_THRESHOLD_PERCENT, SIGNAL_TTL_SECONDS
+from scenarios import (
+    SCENARIOS, CPU_WEIGHT, CPU_THRESHOLD_PERCENT, SIGNAL_TTL_SECONDS,
+    UNKNOWN_TOPIC, UNKNOWN_PRIORITIES, UNKNOWN_COOLDOWN_SECONDS,
+    AI_RULE_MARKER, UNKNOWN_FIELDS,
+)
 
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
 SOURCE_TOPICS = ["docker-metrics", "docker-logs", "docker-syscalls"]
@@ -122,17 +126,59 @@ def handle_log(container_id: str, payload: dict) -> None:
                 print(f"[DEBUG-UNKNOWN-LOG] scenario={name} matched_keywords={matched} | raw_payload={payload}")
 
 
+_unknown_seen = {}  # tên luật Falco -> timestamp lần cuối đã báo
+
+
+def report_unknown(container_id: str, payload: dict) -> None:
+    """Falco alert đáng chú ý nhưng không khớp kịch bản nào: gửi sang topic
+    UNKNOWN_TOPIC để rule_proposer nhờ AI đề xuất luật (cần người duyệt)."""
+    if container_id in ("unknown", "host"):
+        return  # chỉ quan tâm hành vi bên trong container
+
+    rule_name = str(payload.get("rule", "")).strip()
+    if not rule_name or AI_RULE_MARKER in rule_name.lower():
+        return
+
+    now = time.time()
+    if now - _unknown_seen.get(rule_name, 0) < UNKNOWN_COOLDOWN_SECONDS:
+        return
+    _unknown_seen[rule_name] = now
+
+    fields = payload.get("output_fields")
+    fields = fields if isinstance(fields, dict) else {}
+    event = {
+        "@timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "container_id": container_id,
+        "rule": rule_name,
+        "priority": payload.get("priority"),
+        "output": str(payload.get("output", ""))[:1000],
+        "fields": {k: fields[k] for k in UNKNOWN_FIELDS if k in fields},
+    }
+    try:
+        producer.send(UNKNOWN_TOPIC, event)
+        producer.flush()
+        print(f"[UNKNOWN-THREAT] container={container_id} rule='{rule_name}' "
+              f"-> đã gửi sang topic '{UNKNOWN_TOPIC}'")
+    except Exception as e:
+        print(f"[UNKNOWN-THREAT ERROR] {e}")
+
+
 def handle_syscall(container_id: str, payload: dict) -> None:
     rule = str(payload.get("rule", "")).lower()
     output = str(payload.get("output", "")).lower()
     s = get_state(container_id)
+    matched_any = False
     for name, cfg in SCENARIOS.items():
         hit_output = any(kw in output for kw in cfg["syscall_output_kw"])
         hit_rule = any(kw in rule for kw in cfg["syscall_rule_kw"])
         if hit_output or hit_rule:
+            matched_any = True
             s["signals"][f"SYSCALL:{name}"] = time.time()
             if container_id == "unknown":
                 print(f"[DEBUG-UNKNOWN-SYSCALL] scenario={name} raw_payload={payload}")
+
+    if not matched_any and str(payload.get("priority", "")).lower() in UNKNOWN_PRIORITIES:
+        report_unknown(container_id, payload)
 
 
 def evaluate(container_id: str):

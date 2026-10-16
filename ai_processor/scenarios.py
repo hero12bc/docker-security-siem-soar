@@ -62,6 +62,30 @@ SCENARIOS = {
         "weight_syscall": 40,
         "uses_cpu_signal": False,
     },
+    # ---- Luật do AI sinh và đã được người dùng duyệt ----
+    # Rule_proposer luôn đặt tên luật có hậu tố "[AI-<id>]". Khi một luật như vậy
+    # kích hoạt, ta chỉ cho điểm HIGH (50), KHÔNG lên CRITICAL: luật AI chưa được
+    # kiểm chứng đủ lâu nên không được phép tự động dừng container.
+    "ai_generated": {
+        "label": "AI-Generated Rule Match",
+        "log_keywords": [],
+        "syscall_output_kw": [],
+        "syscall_rule_kw": ["[ai-"],
+        "weight_log": 0,
+        "weight_syscall": 50,
+        "uses_cpu_signal": False,
+    },
+    # Luật AI "chặt" (tên có hậu tố "-strict]"): proposer chỉ gắn khi condition có CẢ tên tiến
+    # trình lẫn tham số cụ thể và đã được người dùng duyệt. Chỉ loại này được lên CRITICAL (80).
+    "ai_generated_strict": {
+        "label": "AI-Generated Strict Rule Match",
+        "log_keywords": [],
+        "syscall_output_kw": [],
+        "syscall_rule_kw": ["-strict]"],
+        "weight_log": 0,
+        "weight_syscall": 80,
+        "uses_cpu_signal": False,
+    },
 }
 
 # Tín hiệu CPU cao dùng chung cho mọi kịch bản có uses_cpu_signal=True
@@ -70,3 +94,18 @@ CPU_THRESHOLD_PERCENT = 80
 
 # Tín hiệu tự "hết hạn" sau chừng này giây nếu không lặp lại
 SIGNAL_TTL_SECONDS = 240
+
+# ---- Phát hiện hành vi lạ (không khớp kịch bản nào) ----
+# Falco alert có priority thuộc tập này mà không khớp kịch bản nào sẽ được đẩy
+# sang topic UNKNOWN_TOPIC để rule_proposer nhờ AI đề xuất luật mới.
+UNKNOWN_TOPIC = "unknown-threats"
+UNKNOWN_PRIORITIES = {"warning", "error", "critical", "alert", "emergency"}
+# Mỗi tên luật Falco chỉ báo lại sau chừng này giây (chống spam).
+UNKNOWN_COOLDOWN_SECONDS = 3600
+# Hậu tố đặt trong tên luật do AI sinh (so khớp chữ thường).
+AI_RULE_MARKER = "[ai-"
+# Các field Falco được phép gửi kèm (giới hạn kích thước, tránh lộ dữ liệu thừa).
+UNKNOWN_FIELDS = (
+    "proc.name", "proc.cmdline", "proc.pname", "container.name",
+    "container.image.repository", "fd.name", "user.name", "evt.type",
+)
