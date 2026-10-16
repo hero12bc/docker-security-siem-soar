@@ -227,3 +227,97 @@ Nếu gặp vấn đề, tạo GitHub Issue hoặc liên hệ nhóm.
 
 ---
 **Made with ❤️ by Security Team**
+
+## 🧪 Quá trình thực hiện và kết quả: AI tự đề xuất luật cho hành vi chưa từng gặp (zero-day)
+
+Phần này ghi lại quá trình xây dựng, thử nghiệm và kết quả đạt được của tính năng "AI tự sinh luật Falco, người duyệt qua Telegram". Số liệu và ảnh chụp lấy từ lần chạy thực tế ngày 16/10/2026 trên WSL2 (Kali), Falco chạy trên host bằng driver modern-bpf, mô hình `phi3:mini` chạy bằng Ollama.
+
+### 1. Mục tiêu
+
+Hệ thống ban đầu chỉ nhận diện được 4 kịch bản có sẵn (đào coin, reverse shell, brute-force SSH, rò rỉ dữ liệu). Mục tiêu của tính năng mới là xử lý trường hợp một hành vi đáng ngờ **chưa nằm trong kịch bản nào** xảy ra: AI soạn luật Falco, gửi cho người quản trị duyệt trên Telegram, và nếu được duyệt thì luật được nạp vào Falco để lần sau hệ thống nhận diện được.
+
+### 2. Quy trình tổng thể
+
+```
+Falco báo hành vi lạ ──► ai_processor: không khớp kịch bản nào ──► topic unknown-threats
+        ──► rule_proposer: nhờ AI (Ollama) soạn luật, kiểm tra bằng code
+        ──► Telegram: gửi luật kèm nút Duyệt / Từ chối
+        ──► Duyệt: ghi file falco_rules_approved/ai-<id>.yaml
+        ──► falco_rule_sync.sh (trên host): kiểm tra bằng falco -V, chép vào /etc/falco/rules.d, nạp lại Falco
+        ──► Lần sau hành vi lặp lại: Falco báo bằng luật mới ──► ai_processor chấm điểm ──► incident_responder xử lý ──► Telegram
+```
+
+Các nguyên tắc an toàn được giữ xuyên suốt:
+
+1. **Luôn có người duyệt.** AI chỉ đề xuất, không tự áp dụng luật. Chỉ người đúng `TELEGRAM_CHAT_ID` (hoặc nằm trong `TELEGRAM_APPROVER_IDS`) mới bấm duyệt được.
+2. **Luật AI mặc định chỉ cảnh báo.** Luật thường (tên có hậu tố `[AI-<id>]`) chỉ được chấm mức HIGH (50 điểm) nên không bao giờ tự dừng container.
+3. **Chỉ luật "chặt" mới được tự dừng container.** Luật chặt (hậu tố `[AI-<id>-strict]`) bắt buộc có cả tên tiến trình lẫn tham số cụ thể, gắn với `spawned_process`, và không có `or` nối tên tiến trình với điều kiện khác. Luật chặt sau khi được duyệt chấm 80 điểm (CRITICAL).
+4. **Có lớp bảo vệ phía host.** Script đồng bộ kiểm tra từng luật bằng `falco -V`, và gỡ luật vừa thêm nếu Falco không chạy được sau khi nạp.
+
+### 3. Những vấn đề gặp phải và cách giải quyết
+
+Bảng dưới đây tóm tắt các lỗi phát sinh trong quá trình thử nghiệm. Đây cũng là phần cho thấy vì sao luật do AI sinh ra không thể tin tưởng vô điều kiện.
+
+| # | Hiện tượng quan sát được | Nguyên nhân | Cách khắc phục |
+|---|---|---|---|
+| 1 | Mô tả luật là tiếng Việt vô nghĩa | Prompt yêu cầu viết `desc` bằng tiếng Việt, model nhỏ viết kém | Mô tả do code tự điền, không dùng văn bản của model |
+| 2 | Luật chứa nguyên `10.0.0.0/24` của lần tấn công | Prompt đưa IP và cmdline thật cho model nên nó chép lại | Che IP và container id (`<IP>`, `<ID>`) trước khi đưa vào prompt, và loại luật có IP cứng |
+| 3 | Cú pháp `contains ("x")` sai | `contains` chỉ nhận một chuỗi, không nhận danh sách | Tự sửa trường hợp một phần tử, loại trường hợp nhiều phần tử |
+| 4 | Luật `proc.name in (nmap, masscan, zmap)` cho hành vi xóa log bằng `rm` | Prompt có sẵn ví dụ nmap/masscan, model chép ví dụ thay vì dùng tiến trình thật | Bỏ ví dụ cụ thể khỏi prompt, thêm bước kiểm tra luật phải khớp tiến trình và cmdline của sự kiện đã quan sát |
+| 5 | Luật gắn nhãn "chặt" nhưng điều kiện là `(proc.name in (rm) or proc.cmdline contains "/var/log/")` | `or` nối tên tiến trình với đường dẫn làm luật khớp mọi lệnh `rm` hoặc mọi lệnh có `/var/log/` | Chỉ cho phép `or` giữa các `proc.name`, loại luật có `or` trộn tên tiến trình với điều kiện khác |
+| 6 | Falco bắt được luật mới nhưng không có sự cố nào | Container `connector` (cổng 2801, nhận cảnh báo từ Falco) đã thoát từ 4 ngày trước (`Exited (255)`), Falco báo `libcurl failed: Couldn't connect to server` | Bật lại `connector` và thêm `restart: unless-stopped` trong `docker-compose.yml` |
+
+Ngoài ra, các lỗi môi trường đã gặp trước đó (Filebeat/Metricbeat thoát do file cấu hình sai chủ sở hữu, mất dữ liệu Grafana và model Ollama sau `docker compose down -v`) được ghi trong mục Troubleshooting.
+
+### 4. Kết quả thử nghiệm
+
+Tình huống thử: xóa log hệ thống trong container (`rm -rf /var/log/auth.log /var/log/syslog`), một hành vi chưa có kịch bản nào bao phủ.
+
+| Bước | Kết quả quan sát được |
+|---|---|
+| Phát hiện hành vi lạ | `ai_processor` ghi `[UNKNOWN-THREAT]` và đẩy sang topic `unknown-threats` |
+| AI đề xuất luật | Telegram nhận tin "AI đề xuất luật Falco mới" kèm nút Duyệt/Từ chối, luật được gắn nhãn Luật CHẶT |
+| Duyệt luật | Telegram báo "Đã duyệt luật 9993456b93", tạo `falco_rules_approved/ai-9993456b93.yaml` |
+| Nạp luật vào Falco | `falco_rule_sync.sh` chép luật vào `/etc/falco/rules.d`, nạp lại Falco, báo "Falco hoạt động bình thường, đã áp dụng 1 luật mới" |
+| Falco bắt hành vi lặp lại | Falco báo luật `System Logs Deleted By RM Command [AI-9993456b93-strict]` cho container thật `victim_logwipe` |
+| Chấm điểm | `ai_processor` ghi `[CRITICAL] scenario=ai_generated_strict score=80` và đẩy sự cố sang `threat-incidents` |
+| Phản ứng | Container `victim_logwipe` chuyển sang `Exited (137)` |
+| Thông báo | Telegram nhận "CẢNH BÁO AN NINH": CRITICAL, risk score 80, "Hành động: stop (success)" |
+
+Như vậy chuỗi xử lý đầu cuối hoạt động: một hành vi lạ được phát hiện, AI đề xuất luật, người quản trị duyệt, luật được nạp vào Falco, và lần xảy ra sau hệ thống tự động ngăn chặn container và thông báo.
+
+### 5. Hạn chế đã biết
+
+- **Lần xảy ra đầu tiên không bị chặn.** Hệ thống chỉ phát hiện và đề xuất luật. Luật chỉ có tác dụng với những lần xảy ra sau khi được duyệt.
+- **Chất lượng luật phụ thuộc mô hình.** `phi3:mini` là mô hình nhỏ, luật sinh ra có thể sai hoặc quá hẹp. Các lớp kiểm tra bằng code chỉ chặn được những dạng lỗi đã biết, vì vậy người duyệt vẫn cần đọc kỹ `condition` trước khi bấm Duyệt.
+- **Luật có thể quá hẹp.** Luật trong lần thử đòi cả `/var/log/auth.log` lẫn `/var/log/syslog` trong cùng một lệnh nên không bắt được `rm -rf /var/log/*` hoặc chỉ xóa một file. Với luật tự động dừng container, hẹp là phía an toàn hơn rộng, nhưng sẽ bỏ sót một số cách tấn công.
+- **Luật thường chỉ cảnh báo.** Luật AI không đủ điều kiện "chặt" chỉ tạo cảnh báo mức HIGH, không tự dừng container.
+- **Phụ thuộc hạ tầng.** Chuỗi xử lý cần `connector` chạy liên tục để chuyển cảnh báo từ Falco sang Kafka. Đã thêm chính sách tự khởi động lại, nhưng nếu Docker không chạy thì hệ thống vẫn không nhận được cảnh báo.
+
+### 6. Hướng phát triển
+
+- Dùng mô hình lớn hơn (ví dụ qwen2.5:7b) hoặc đưa các luật đã được duyệt làm ví dụ mẫu trong prompt để tăng chất lượng.
+- Thêm bước loại luật chép nguyên từng tên file trong cmdline để luật tổng quát hơn.
+- Thử thêm các tình huống zero-day khác đã có sẵn trong `test_simulate_unknown.py`: `escape`, `setuid`, `cron`.
+- Cho phép sửa luật trực tiếp trên Telegram trước khi duyệt.
+
+### 7. Cách chạy lại thử nghiệm
+
+```bash
+# Khởi động hệ thống và bật script nạp luật trên máy host
+docker compose up -d --build
+sudo bash scripts/falco_rule_sync.sh            # giữ terminal này mở
+
+# Tạo container nạn nhân và gửi tình huống zero-day giả lập
+docker run -d --name victim_logwipe alpine sleep 3600
+python3 test_simulate_unknown.py logwipe        # xem thêm: list | scan | escape | setuid | cron | all
+
+# Sau khi duyệt luật trên Telegram và script đã nạp luật, thực hiện hành vi thật
+docker exec victim_logwipe sh -c 'touch /var/log/auth.log /var/log/syslog; rm -rf /var/log/auth.log /var/log/syslog'
+
+# Theo dõi kết quả
+docker compose logs --tail=15 ai_processor
+docker ps -a --filter name=victim_logwipe        # Exited là container đã bị dừng
+```
+
+Muốn chạy lại cùng một tình huống, xóa đề xuất cũ (`curl -X DELETE "localhost:9200/rule-proposals/_doc/<id>"`) và chạy `docker compose restart ai_processor`.
